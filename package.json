@@ -1,0 +1,18 @@
+{
+  "name": "soft3tt-conversion-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Independent conversion backend for Soft3TT.online",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "file-type": "^21.0.0",
+    "multer": "^2.0.2"
+  }
+}
