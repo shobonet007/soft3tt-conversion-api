@@ -20,6 +20,11 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://www.soft3tt.onl
   .split(',').map(s => s.trim()).filter(Boolean);
 const STORAGE = path.resolve(process.env.STORAGE_DIR || path.join(process.cwd(), 'storage', 'jobs'));
 
+// Debian's ImageMagick package commonly exposes the ImageMagick 6 CLI as `convert`
+// rather than the ImageMagick 7 `magick` launcher. Allow an environment override
+// and default to `convert` for Render's Debian-based Docker image.
+const IMAGE_TOOL = process.env.IMAGEMAGICK_BIN || 'convert';
+
 const TOOL_DEFS = {
   'mov-to-mp4': { ext: 'mp4', mime: 'video/mp4', kind: 'video' },
   'mp4-to-webm': { ext: 'webm', mime: 'video/webm', kind: 'video' },
@@ -123,12 +128,12 @@ async function convertFile(tool, input, output, opts) {
     case 'wav-to-mp3':
     case 'm4a-to-mp3': return run('ffmpeg',['-y','-i',input,'-c:a','libmp3lame','-b:a',audio === 'original' ? '192k' : `${audio}k`,output]);
     case 'video-to-gif': return run('ffmpeg',['-y','-i',input,'-vf','fps=12,scale=640:-1:flags=lanczos','-t','20',output]);
-    case 'jpg-to-png': return run('magick',[input,output]);
-    case 'png-to-jpg': return run('magick',[input,'-background','white','-alpha','remove','-alpha','off','-quality','92',output]);
-    case 'webp-to-jpg': return run('magick',[input,'-background','white','-alpha','remove','-alpha','off','-quality','92',output]);
-    case 'heic-to-jpg': return run('magick',[input,'-quality','92',output]);
-    case 'jpg-to-pdf': return run('magick',[input,'-background','white','-alpha','remove','-alpha','off',output]);
-    case 'pdf-to-jpg': return run('magick',[`${input}[0]`,'-quality','92',output]);
+    case 'jpg-to-png': return run(IMAGE_TOOL,[input,output]);
+    case 'png-to-jpg': return run(IMAGE_TOOL,[input,'-background','white','-alpha','remove','-alpha','off','-quality','92',output]);
+    case 'webp-to-jpg': return run(IMAGE_TOOL,[input,'-background','white','-alpha','remove','-alpha','off','-quality','92',output]);
+    case 'heic-to-jpg': return run(IMAGE_TOOL,[input,'-quality','92',output]);
+    case 'jpg-to-pdf': return run(IMAGE_TOOL,[input,'-background','white','-alpha','remove','-alpha','off',output]);
+    case 'pdf-to-jpg': return run(IMAGE_TOOL,[`${input}[0]`,'-quality','92',output]);
     case 'word-to-pdf': return run('libreoffice',['--headless','--convert-to','pdf','--outdir',path.dirname(output),input]);
     case 'pdf-to-word': throw new Error('PDF to Word requires a dedicated PDF/OCR conversion pipeline and is not enabled in this first backend release.');
     default: throw new Error('Unsupported conversion tool.');
@@ -136,7 +141,7 @@ async function convertFile(tool, input, output, opts) {
 }
 
 app.get('/api/health', async (req,res) => {
-  res.json({ ok:true, service:'Soft3TT Conversion API', version:'1.0.0', configured:true, maxFileMB:MAX_FILE_MB, tools:Object.keys(TOOL_DEFS) });
+  res.json({ ok:true, service:'Soft3TT Conversion API', version:'1.0.1', configured:true, maxFileMB:MAX_FILE_MB, tools:Object.keys(TOOL_DEFS) });
 });
 app.get('/api/tools', (req,res) => res.json({ ok:true, tools:TOOL_DEFS }));
 
