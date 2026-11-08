@@ -201,8 +201,18 @@ app.post('/api/convert', upload.single('file'), async (req,res,next) => {
     await convertFile(tool, input, outputPath, { quality:req.body.quality, audio:req.body.audio });
 
     if (tool === 'word-to-pdf' && !(await exists(outputPath))) {
-      const generated = path.join(base, `${path.basename(req.file.originalname, path.extname(req.file.originalname))}.pdf`);
-      if (await exists(generated)) await fsp.rename(generated, outputPath);
+      // LibreOffice names its output after the stored input (input.docx),
+      // not the browser's original filename. Collect input.pdf first.
+      const generatedCandidates = [
+        path.join(path.dirname(input), `${path.basename(input, path.extname(input))}.pdf`),
+        path.join(path.dirname(input), `${path.basename(req.file.originalname, path.extname(req.file.originalname))}.pdf`)
+      ];
+      for (const generated of generatedCandidates) {
+        if (await exists(generated)) {
+          await fsp.rename(generated, outputPath);
+          break;
+        }
+      }
     }
     if (!(await exists(outputPath))) throw new Error('Conversion completed without producing an output file.');
 
