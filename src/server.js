@@ -8,6 +8,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const { spawn } = require('child_process');
+const { PDFDocument } = require('pdfkit');
 
 const app = express();
 const PORT = Number(process.env.PORT || 8080);
@@ -15,14 +16,13 @@ const HOST = process.env.HOST || '0.0.0.0';
 const MAX_FILE_MB = Number(process.env.MAX_FILE_MB || 500);
 const MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024;
 const JOB_TTL_MINUTES = Number(process.env.JOB_TTL_MINUTES || 60);
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+// Render terminates HTTPS before the container. Keep generated download links on the
+// canonical public API origin instead of deriving them from the internal proxy request.
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://api.soft3tt.online').replace(/\/$/, '');
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://www.soft3tt.online,https://soft3tt.online')
   .split(',').map(s => s.trim()).filter(Boolean);
 const STORAGE = path.resolve(process.env.STORAGE_DIR || path.join(process.cwd(), 'storage', 'jobs'));
 
-// Debian's ImageMagick package commonly exposes the ImageMagick 6 CLI as `convert`
-// rather than the ImageMagick 7 `magick` launcher. Allow an environment override
-// and default to `convert` for Render's Debian-based Docker image.
 const IMAGE_TOOL = process.env.IMAGEMAGICK_BIN || 'convert';
 
 const TOOL_DEFS = {
@@ -88,6 +88,44 @@ function run(cmd, args, { timeoutMs = 10 * 60 * 1000 } = {}) {
   });
 }
 
+// Generate an image-based PDF with PDFKit. This avoids ImageMagick's distro-level
+// PDF coder policy, which intentionally blocks PDF output on many Linux packages.
+function imageToPdf(input, output) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ autoFirstPage: false, margin: 0 });
+    const outputStream = fs.createWriteStream(output);
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      outputStream.destroy();
+      reject(error);
+    };
+
+    outputStream.once('error', fail);
+    doc.once('error', fail);
+    outputStream.once('finish', () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    });
+
+    try {
+      doc.pipe(outputStream);
+      // A4 page; PDFKit preserves the source image's aspect ratio within the page.
+      doc.addPage({ size: 'A4', margin: 0 });
+      doc.image(input, 0, 0, {
+        fit: [595.28, 841.89],
+        align: 'center',
+        valign: 'center'
+      });
+      doc.end();
+    } catch (error) {
+      fail(error);
+    }
+  });
+}
+
 async function validateInput(file, tool) {
   const lower = String(file.originalname || '').toLowerCase();
   const allowed = {
@@ -99,8 +137,6 @@ async function validateInput(file, tool) {
   const ext = path.extname(lower);
   if (!allowed[tool]?.includes(ext)) throw new Error(`Unsupported input type for ${tool}.`);
 
-  // Basic magic-byte checks for common binary formats. FFmpeg/ImageMagick/LibreOffice
-  // still perform their own decoding; the extension is not trusted as a security boundary.
   const fh = await fsp.open(file.path, 'r');
   const buf = Buffer.alloc(16);
   await fh.read(buf, 0, 16, 0); await fh.close();
@@ -132,7 +168,7 @@ async function convertFile(tool, input, output, opts) {
     case 'png-to-jpg': return run(IMAGE_TOOL,[input,'-background','white','-alpha','remove','-alpha','off','-quality','92',output]);
     case 'webp-to-jpg': return run(IMAGE_TOOL,[input,'-background','white','-alpha','remove','-alpha','off','-quality','92',output]);
     case 'heic-to-jpg': return run(IMAGE_TOOL,[input,'-quality','92',output]);
-    case 'jpg-to-pdf': return run(IMAGE_TOOL,[input,'-background','white','-alpha','remove','-alpha','off',output]);
+    case 'jpg-to-pdf': return imageToPdf(input, output);
     case 'pdf-to-jpg': return run(IMAGE_TOOL,[`${input}[0]`,'-quality','92',output]);
     case 'word-to-pdf': return run('libreoffice',['--headless','--convert-to','pdf','--outdir',path.dirname(output),input]);
     case 'pdf-to-word': throw new Error('PDF to Word requires a dedicated PDF/OCR conversion pipeline and is not enabled in this first backend release.');
@@ -141,7 +177,7 @@ async function convertFile(tool, input, output, opts) {
 }
 
 app.get('/api/health', async (req,res) => {
-  res.json({ ok:true, service:'Soft3TT Conversion API', version:'1.0.1', configured:true, maxFileMB:MAX_FILE_MB, tools:Object.keys(TOOL_DEFS) });
+  res.json({ ok:true, service:'Soft3TT Conversion API', version:'1.0.2', configured:true, maxFileMB:MAX_FILE_MB, tools:Object.keys(TOOL_DEFS) });
 });
 app.get('/api/tools', (req,res) => res.json({ ok:true, tools:TOOL_DEFS }));
 
@@ -164,7 +200,6 @@ app.post('/api/convert', upload.single('file'), async (req,res,next) => {
 
     await convertFile(tool, input, outputPath, { quality:req.body.quality, audio:req.body.audio });
 
-    // LibreOffice writes based on its input name. Normalize its generated PDF if needed.
     if (tool === 'word-to-pdf' && !(await exists(outputPath))) {
       const generated = path.join(base, `${path.basename(req.file.originalname, path.extname(req.file.originalname))}.pdf`);
       if (await exists(generated)) await fsp.rename(generated, outputPath);
@@ -172,7 +207,7 @@ app.post('/api/convert', upload.single('file'), async (req,res,next) => {
     if (!(await exists(outputPath))) throw new Error('Conversion completed without producing an output file.');
 
     await fsp.writeFile(path.join(base,'job.json'), JSON.stringify({id,tool,createdAt:Date.now(),inputName:safeName(req.file.originalname),outputName:`Soft3TT-${tool}.${def.ext}`},null,2));
-    const downloadUrl = `${PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`}/api/download/${id}`;
+    const downloadUrl = `${PUBLIC_BASE_URL}/api/download/${id}`;
     return res.json({ ok:true, jobId:id, tool, downloadUrl, filename:`Soft3TT-${tool}.${def.ext}`, expiresInMinutes:JOB_TTL_MINUTES });
   } catch (err) {
     if (inputPath) await fsp.rm(inputPath,{force:true}).catch(()=>{});
@@ -195,6 +230,8 @@ app.get('/api/download/:id', async (req,res,next) => {
     if (!(await exists(output))) return res.status(404).json({ok:false,message:'Converted file not found.'});
     res.setHeader('Content-Type',TOOL_DEFS[meta.tool].mime);
     res.setHeader('Content-Disposition',`attachment; filename="${meta.outputName}"`);
+    res.setHeader('X-Content-Type-Options','nosniff');
+    res.setHeader('Cache-Control','no-store');
     return res.sendFile(output);
   } catch (err) { return next(err); }
 });
@@ -207,7 +244,7 @@ async function cleanupExpired(){
     if(!e.isDirectory()) continue;
     const meta = path.join(STORAGE,e.name,'job.json');
     try { const j=JSON.parse(await fsp.readFile(meta,'utf8')); if(j.createdAt < cutoff) await fsp.rm(path.join(STORAGE,e.name),{recursive:true,force:true}); }
-    catch { /* remove orphan temp directories older than TTL based on mtime */
+    catch {
       try { const st=await fsp.stat(path.join(STORAGE,e.name)); if(st.mtimeMs < cutoff) await fsp.rm(path.join(STORAGE,e.name),{recursive:true,force:true}); } catch {}
     }
   }
