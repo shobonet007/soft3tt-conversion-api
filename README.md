@@ -1,6 +1,6 @@
 # Soft3TT Conversion API
 
-Independent backend for `soft3tt.online`. It accepts multipart uploads and performs server-side conversions with FFmpeg, ImageMagick and LibreOffice.
+Independent backend for `soft3tt.online`. It accepts multipart uploads and performs server-side conversions with FFmpeg, ImageMagick, LibreOffice, Poppler (`pdftoppm`) and libheif (`heif-convert`).
 
 ## Current tools
 
@@ -59,7 +59,7 @@ Converted files are stored temporarily and cleaned automatically after the confi
 
 ## Local development
 
-Requirements: Node.js 20+, FFmpeg, ImageMagick and LibreOffice.
+Requirements: Node.js 20+, FFmpeg, ImageMagick, LibreOffice, Poppler utilities and libheif examples.
 
 ```bash
 npm install
