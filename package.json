@@ -1,6 +1,6 @@
 {
   "name": "soft3tt-conversion-api",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "private": true,
   "description": "Independent conversion backend for Soft3TT.online",
   "main": "src/server.js",
@@ -13,6 +13,7 @@
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "file-type": "^21.0.0",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "pdfkit": "^0.20.2"
   }
 }
