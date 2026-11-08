@@ -138,7 +138,7 @@ function isHeifSignature(header) {
 async function pdfToJpg(input, output) {
   // Use Poppler rather than ImageMagick: common ImageMagick builds intentionally
   // disable PDF reading in policy.xml. Render only the first page.
-  const outputBase = output.replace(/\\.jpg$/i, '');
+  const outputBase = output.slice(0, -4);
   return run('pdftoppm', [
     '-f', '1', '-l', '1', '-singlefile', '-jpeg', '-r', '150',
     '-jpegopt', 'quality=92', input, outputBase
