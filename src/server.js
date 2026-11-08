@@ -201,14 +201,34 @@ async function convertFile(tool, input, output, opts) {
     case 'heic-to-jpg': return run('heif-convert',['-q','92',input,output]);
     case 'jpg-to-pdf': return imageToPdf(input, output);
     case 'pdf-to-jpg': return pdfToJpg(input, output);
-    case 'word-to-pdf': return run('libreoffice',['--headless','--convert-to','pdf','--outdir',path.dirname(output),input]);
+    case 'word-to-pdf': {
+      // Give each conversion an isolated LibreOffice profile to prevent
+      // concurrent jobs from colliding on the default user profile.
+      const outputDir = path.join(path.dirname(output), 'libreoffice-output');
+      await fsp.mkdir(outputDir, { recursive: true });
+      const profile = `file:///tmp/soft3tt-libreoffice-${crypto.randomUUID()}`;
+      const result = await run('libreoffice', [
+        `-env:UserInstallation=${profile}`,
+        '--headless',
+        '--convert-to', 'pdf:writer_pdf_Export',
+        '--outdir', outputDir,
+        input
+      ]);
+      const generated = (await fsp.readdir(outputDir))
+        .filter(name => name.toLowerCase().endsWith('.pdf'));
+      if (generated.length === 0) {
+        throw new Error(`LibreOffice did not create a PDF. stdout: ${result.stdout || '(empty)'}; stderr: ${result.stderr || '(empty)'}`);
+      }
+      await fsp.rename(path.join(outputDir, generated[0]), output);
+      return result;
+    }
     case 'pdf-to-word': throw new Error('PDF to Word requires a dedicated PDF/OCR conversion pipeline and is not enabled in this first backend release.');
     default: throw new Error('Unsupported conversion tool.');
   }
 }
 
 app.get('/api/health', async (req,res) => {
-  res.json({ ok:true, service:'Soft3TT Conversion API', version:'1.0.3', configured:true, maxFileMB:MAX_FILE_MB, tools:Object.keys(TOOL_DEFS) });
+  res.json({ ok:true, service:'Soft3TT Conversion API', version:'1.0.4', configured:true, maxFileMB:MAX_FILE_MB, tools:Object.keys(TOOL_DEFS) });
 });
 app.get('/api/tools', (req,res) => res.json({ ok:true, tools:TOOL_DEFS }));
 
@@ -231,20 +251,6 @@ app.post('/api/convert', upload.single('file'), async (req,res,next) => {
 
     await convertFile(tool, input, outputPath, { quality:req.body.quality, audio:req.body.audio });
 
-    if (tool === 'word-to-pdf' && !(await exists(outputPath))) {
-      // LibreOffice names its output after the stored input (input.docx),
-      // not the browser's original filename. Collect input.pdf first.
-      const generatedCandidates = [
-        path.join(path.dirname(input), `${path.basename(input, path.extname(input))}.pdf`),
-        path.join(path.dirname(input), `${path.basename(req.file.originalname, path.extname(req.file.originalname))}.pdf`)
-      ];
-      for (const generated of generatedCandidates) {
-        if (await exists(generated)) {
-          await fsp.rename(generated, outputPath);
-          break;
-        }
-      }
-    }
     if (!(await exists(outputPath))) throw new Error('Conversion completed without producing an output file.');
 
     await fsp.writeFile(path.join(base,'job.json'), JSON.stringify({id,tool,createdAt:Date.now(),inputName:safeName(req.file.originalname),outputName:`Soft3TT-${tool}.${def.ext}`},null,2));
