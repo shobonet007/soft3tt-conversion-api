@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg imagemagick libreoffice fonts-dejavu \
+    ffmpeg imagemagick libreoffice fonts-dejavu poppler-utils libheif-examples \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
