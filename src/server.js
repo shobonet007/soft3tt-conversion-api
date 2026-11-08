@@ -114,7 +114,7 @@ function imageToPdf(input, output) {
       doc.pipe(outputStream);
       // A4 page; PDFKit preserves the source image's aspect ratio within the page.
       doc.addPage({ size: 'A4', margin: 0 });
-      doc.image(input, 0, 0, {
+      doc.image(input, {
         fit: [595.28, 841.89],
         align: 'center',
         valign: 'center'
