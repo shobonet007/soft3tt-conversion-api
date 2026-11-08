@@ -126,6 +126,25 @@ function imageToPdf(input, output) {
   });
 }
 
+function isHeifSignature(header) {
+  if (header.length < 12 || header.toString('ascii', 4, 8) !== 'ftyp') return false;
+  // HEIF files can use several major/compatible brands, not only the literal
+  // "heic" brand. The compatible brands live in the ftyp box near the header.
+  const brands = ['heic','heix','hevc','hevx','heim','heis','hevm','hevs','mif1','msf1'];
+  const ftypHeader = header.subarray(8, Math.min(header.length, 256)).toString('ascii');
+  return brands.some(brand => ftypHeader.includes(brand));
+}
+
+async function pdfToJpg(input, output) {
+  // Use Poppler rather than ImageMagick: common ImageMagick builds intentionally
+  // disable PDF reading in policy.xml. Render only the first page.
+  const outputBase = output.replace(/\\.jpg$/i, '');
+  return run('pdftoppm', [
+    '-f', '1', '-l', '1', '-singlefile', '-jpeg', '-r', '150',
+    '-jpegopt', 'quality=92', input, outputBase
+  ]);
+}
+
 async function validateInput(file, tool) {
   const lower = String(file.originalname || '').toLowerCase();
   const allowed = {
@@ -138,14 +157,26 @@ async function validateInput(file, tool) {
   if (!allowed[tool]?.includes(ext)) throw new Error(`Unsupported input type for ${tool}.`);
 
   const fh = await fsp.open(file.path, 'r');
-  const buf = Buffer.alloc(16);
-  await fh.read(buf, 0, 16, 0); await fh.close();
-  const hex = buf.toString('hex');
-  if (['jpg-to-png','png-to-jpg','webp-to-jpg','heic-to-jpg','jpg-to-pdf'].includes(tool)) {
-    const ok = hex.startsWith('ffd8ff') || hex.startsWith('89504e470d0a1a0a') || hex.startsWith('52494646') || hex.includes('6674797068656963');
-    if (!ok) throw new Error('The uploaded file does not appear to be a supported image.');
+  const buf = Buffer.alloc(64 * 1024);
+  const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+  await fh.close();
+  const header = buf.subarray(0, bytesRead);
+  const jpeg = header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+  const png = header.subarray(0, 8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]));
+  const webp = header.toString('ascii', 0, 4) === 'RIFF' && header.toString('ascii', 8, 12) === 'WEBP';
+  const imageValid = {
+    'jpg-to-png': jpeg,
+    'png-to-jpg': png,
+    'webp-to-jpg': webp,
+    'heic-to-jpg': isHeifSignature(header),
+    'jpg-to-pdf': jpeg
+  };
+  if (Object.prototype.hasOwnProperty.call(imageValid, tool) && !imageValid[tool]) {
+    throw new Error('The uploaded file does not appear to be a supported image for this conversion.');
   }
-  if (['pdf-to-jpg','pdf-to-word'].includes(tool) && !buf.toString('ascii',0,5).startsWith('%PDF-')) throw new Error('The uploaded file is not a valid PDF.');
+  if (['pdf-to-jpg','pdf-to-word'].includes(tool) && header.toString('ascii',0,5) !== '%PDF-') {
+    throw new Error('The uploaded file is not a valid PDF.');
+  }
 }
 
 async function convertFile(tool, input, output, opts) {
@@ -167,9 +198,9 @@ async function convertFile(tool, input, output, opts) {
     case 'jpg-to-png': return run(IMAGE_TOOL,[input,output]);
     case 'png-to-jpg': return run(IMAGE_TOOL,[input,'-background','white','-alpha','remove','-alpha','off','-quality','92',output]);
     case 'webp-to-jpg': return run(IMAGE_TOOL,[input,'-background','white','-alpha','remove','-alpha','off','-quality','92',output]);
-    case 'heic-to-jpg': return run(IMAGE_TOOL,[input,'-quality','92',output]);
+    case 'heic-to-jpg': return run('heif-convert',['-q','92',input,output]);
     case 'jpg-to-pdf': return imageToPdf(input, output);
-    case 'pdf-to-jpg': return run(IMAGE_TOOL,[`${input}[0]`,'-quality','92',output]);
+    case 'pdf-to-jpg': return pdfToJpg(input, output);
     case 'word-to-pdf': return run('libreoffice',['--headless','--convert-to','pdf','--outdir',path.dirname(output),input]);
     case 'pdf-to-word': throw new Error('PDF to Word requires a dedicated PDF/OCR conversion pipeline and is not enabled in this first backend release.');
     default: throw new Error('Unsupported conversion tool.');
@@ -177,7 +208,7 @@ async function convertFile(tool, input, output, opts) {
 }
 
 app.get('/api/health', async (req,res) => {
-  res.json({ ok:true, service:'Soft3TT Conversion API', version:'1.0.2', configured:true, maxFileMB:MAX_FILE_MB, tools:Object.keys(TOOL_DEFS) });
+  res.json({ ok:true, service:'Soft3TT Conversion API', version:'1.0.3', configured:true, maxFileMB:MAX_FILE_MB, tools:Object.keys(TOOL_DEFS) });
 });
 app.get('/api/tools', (req,res) => res.json({ ok:true, tools:TOOL_DEFS }));
 
